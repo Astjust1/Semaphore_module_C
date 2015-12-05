@@ -1,0 +1,6 @@
+consumer: consumer.c 
+	gcc -o consumer consumer.c -I -Wall
+producer: producer.c
+	gcc -o producer producer.c -I -Wall
+clean:
+	rm -rf *.o consumer

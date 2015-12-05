@@ -1,0 +1,194 @@
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/miscdevice.h>
+#include <linux/fs.h>
+#include <asm/uaccess.h>
+#include <linux/kernel.h>
+#include <linux/slab.h> 
+#include <linux/wait.h>
+#include <linux/semaphore.h> 
+#include <linux/mutex.h> 
+
+#define BUFFLEN 300
+#define MAX_LENGTH 100
+MODULE_LICENSE("DUAL BSD/GPL");
+MODULE_AUTHOR("Armond St.Juste");
+
+static int numberOpens = 0;
+static int N = 15;
+static char **buffer;           ///< Memory for the string that is passed from userspace
+static short  size_of_message;              ///< Used to remember the size of the string stored
+static DEFINE_SEMAPHORE(full);
+static DEFINE_SEMAPHORE(empty);
+static DEFINE_MUTEX(my_mutex); 
+//static char message[BUFFLEN];
+static int counter = 0;
+module_param(N, int,0);
+void shift(char ** buffer, int counter);
+void freeBuff(char ** buf);
+
+static int my_open(struct inode *inode, struct file *file)
+
+{
+
+       int ret = 0;
+	numberOpens++;
+	printk(KERN_INFO "Device opened successfully\n");
+       return ret;
+
+}
+
+
+static int my_close(struct inode *inodep, struct file *filp)
+
+{
+	
+       int ret = 0;
+	numberOpens--;
+	printk(KERN_INFO "Device closed successfully\n");
+       return ret;
+
+}
+
+
+static ssize_t my_write(struct file *file, const char __user *buf, size_t length, loff_t *ppos)
+
+{	
+	//printk(KERN_INFO "ENTERED WRITE\n");
+	//printk(KERN_INFO "ENTERED WRITE LOOP\n");
+	//buffer[counter] = "hi";
+	//printk(KERN_INFO "Buffer at 0 %s", buffer[counter]);
+	if (down_interruptible(&empty)){
+		//printk(KERN_INFO "ENTERED WRITE WRITING empty check\n");
+		 return -ERESTARTSYS;
+		}
+
+	if (mutex_lock_interruptible(&my_mutex)){
+		//printk(KERN_INFO "ENTERED WRITE WRITING mutex check\n");
+		up(&empty);
+		//printk(KERN_INFO "ENTERED WRITE WRITING mutex check after up\n");
+		return -ERESTARTSYS;
+		}
+	//printk(KERN_INFO "ENTERED WRITE ENTERING COUNTER CHECK");
+	if (counter == N){
+		//printk(KERN_INFO "ENTERED WRITE counter check");
+		counter = 0;
+	}
+	printk(KERN_INFO "ENTERED WRITE WRITING MESG\n");
+       	if (copy_from_user(buffer[counter], buf, length)){
+		return -EFAULT;
+	} 
+	//printk(KERN_INFO "THE STRING IN Buffer %d is: %s\n", counter, buffer[counter]); 
+   	size_of_message = strlen(buffer[counter]);                 // extra error check for copy from user (not really necessary)
+	counter++;
+	mutex_unlock(&my_mutex);
+	up(&full);
+   	//printk(KERN_INFO "EBBChar: Received %d characters from the user\n", size_of_message);
+   	return size_of_message;
+	///return 0;
+}
+
+
+static ssize_t my_read(struct file *file, const char __user *buf, size_t length, loff_t *ppos)
+
+{
+       int ret;
+	counter = 0;
+	//printk(KERN_INFO "ENTERED READ\n");
+	if (down_interruptible(&full)){
+		 return -ERESTARTSYS;
+		}
+
+	if (mutex_lock_interruptible(&my_mutex)){
+		up(&full);
+		return -ERESTARTSYS;
+		}
+	//printk(KERN_INFO "%s\n", buffer[counter]);
+	//if (counter == N){
+	//	counter--;
+	//}
+	//printk(KERN_INFO "THIS IS IN BUFFER: %s\n ", buffer[counter]);
+	ret = copy_to_user(buf,buffer[counter],length);
+	//printk(KERN_INFO "ENTERED shift\n");
+	shift(buffer,counter);
+	mutex_unlock(&my_mutex);
+	up(&empty);
+	if(ret == 0){
+	 	//printk(KERN_INFO "EBBChar: Sent %d characters to the user\n", length);
+      		return (length=0); 
+	}else{
+	 	//printk(KERN_INFO "EBBChar: Failed to send %d characters to the user\n", ret);
+      		return -EFAULT;         
+	}
+
+}
+
+static struct file_operations my_fops={
+	.owner = THIS_MODULE,
+	.open = my_open,
+	.release = my_close,
+	.read = my_read,
+	.write = my_write
+
+};
+
+static struct miscdevice my_time={
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "mypipe",
+	.fops = &my_fops
+};
+
+
+int __init init_module(void){
+	int ret;
+	int i;
+	ret = misc_register(&my_time);
+	sema_init(&empty, N);
+	sema_init(&full, 0);
+	//mutex_init(&my_mutex);
+	buffer = kzalloc(sizeof(char* )*N, GFP_KERNEL); // init + error handle buffer
+	if (!buffer){
+		//printk(KERN_ALERT "Failed to initialize buffer");
+		return -1;
+		}
+	for(i = 0; i < N; i++){
+		buffer[i] = kzalloc(sizeof(char)*MAX_LENGTH, GFP_KERNEL);
+		if(!buffer){
+			//printk(KERN_ALERT "Failed to initialize buffer[%d]", i);
+			return -1;
+		}
+	}
+	
+	if (ret) return ret;
+	//printk(KERN_INFO "\nmypipe: init works\n");
+
+	return 0;
+}
+
+void __exit cleanup_module(void){
+	int ret;
+	ret = misc_deregister(&my_time);
+	mutex_destroy(&my_mutex); 
+	freeBuff(buffer);
+	if (ret) return ret;
+	//printk(KERN_INFO "mypipe: exit works\n");
+}
+
+
+void shift(char ** buffer, int counter){
+	int i;
+	for(i = counter; i > 0; --i){
+		if ((i != 0) && (i > -1)){
+		buffer[i] = buffer[i-1];
+		}
+	    }
+	counter++;
+}
+
+void freeBuff(char ** buf){
+	int i;
+	for(i = 0; i < N; i++){
+		kfree(buffer[i]);
+	}
+	kfree(buffer);
+}

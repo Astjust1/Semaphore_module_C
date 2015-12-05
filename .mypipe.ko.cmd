@@ -1,0 +1,1 @@
+cmd_/home/astjuste423/Assignment5/mypipe.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /home/astjuste423/Assignment5/mypipe.ko /home/astjuste423/Assignment5/mypipe.o /home/astjuste423/Assignment5/mypipe.mod.o
